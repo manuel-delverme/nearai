@@ -138,19 +138,40 @@ class Agent(object):
                 os.setgid(user_info.pw_gid)
                 os.setuid(user_info.pw_uid)
 
-            # Run the code
-            # NOTE: runpy.run_path does not work in a multithreaded environment when running benchmark.
-            #       The performance of runpy.run_path may also change depending on a system, e.g. it may
-            #       work on Linux but not work on Mac.
-            #       `compile` and `exec` have been tested to work properly in a multithreaded environment.
-            if self.code:
-                exec(self.code, agent_namespace)
+            import importlib.util
 
-            # If no errors occur, return None
+            # Create a temporary file with the agent code
+            with tempfile.NamedTemporaryFile(
+                dir=self.temp_dir,
+                mode='w',
+                suffix='.py',
+                delete=False
+            ) as temp_file:
+                # Write the source code from file_cache
+                temp_file.write(self.file_cache[AGENT_FILENAME_PY])
+                temp_file.flush()
+
+                # Load and execute the module
+                spec = importlib.util.spec_from_file_location("agent_code", temp_file.name)
+                if not spec or not spec.loader:
+                    raise ImportError("Failed to create module spec")
+
+                module = importlib.util.module_from_spec(spec)
+                sys.modules["agent_code"] = module
+
+                # Populate module namespace
+                for k, v in agent_namespace.items():
+                    if k != "__name__":  # Don't override the module name
+                        setattr(module, k, v)
+
+                spec.loader.exec_module(module)
+
+                # Clean up temp file
+                os.unlink(temp_file.name)
+
             return None, None
 
         except Exception as e:
-            # Return error message and full traceback as strings
             return str(e), traceback.format_exc()
 
     def run_ts_agent(self, agent_filename, env_vars, json_params):
@@ -213,6 +234,8 @@ class Agent(object):
 
     def run(self, env: Any, task: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
         """Run the agent code. Returns error message and traceback message."""
+
+
         # combine agent.env_vars and env.env_vars
         total_env_vars = {**self.env_vars, **env.env_vars}
 
@@ -284,7 +307,6 @@ class Agent(object):
             "env": env,
             "agent": self,
             "task": task,
-            "__name__": "__main__",
             "__file__": self.agent_filename,
         }
 
